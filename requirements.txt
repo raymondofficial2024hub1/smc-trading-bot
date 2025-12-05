@@ -1,2 +1,5 @@
 streamlit
 pandas
+ccxt
+plotly
+smartmoneyconcepts==0.0.1  # Pinning the version
