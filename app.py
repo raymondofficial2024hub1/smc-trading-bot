@@ -3,17 +3,37 @@ import ccxt
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
+import requests # NEW: for making HTTP requests (Discord)
+import os 
 
 # 1. PAGE SETUP
 st.set_page_config(layout="wide", page_title="SMC Algo Trader")
 st.title("🤖 Smart Money Concepts (SMC) Trader")
 
-# 2. SIDEBAR CONTROLS
+# 2. DISCORD NOTIFICATION FUNCTION (Reads secret key)
+def send_discord_alert(message):
+    try:
+        # Read the Webhook URL from Streamlit Secrets
+        WEBHOOK_URL = st.secrets["DISCORD_WEBHOOK_URL"]
+        
+        # Discord requires the message content in a JSON payload
+        payload = {
+            "content": message,
+            "username": "SMC Trading Bot"
+        }
+        
+        # Send the POST request to the Webhook URL
+        requests.post(WEBHOOK_URL, json=payload)
+    except Exception as e:
+        # We print to the Streamlit logs, but don't stop the app
+        print(f"Failed to send Discord alert. Check secret key: {e}")
+
+# 3. SIDEBAR CONTROLS
 st.sidebar.header("Market Settings")
 symbol = st.sidebar.text_input("Symbol", value="BTC/USDT")
 timeframe = st.sidebar.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=1)
 
-# 3. FUNCTION TO FETCH DATA (Connects to Binance)
+# 4. FUNCTION TO FETCH DATA (Connects to Binance)
 def get_data(symbol, timeframe):
     exchange = ccxt.binance()
     ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=500)
@@ -22,23 +42,16 @@ def get_data(symbol, timeframe):
     df = df.set_index('time')
     return df
 
-# 4. CUSTOM SMC LOGIC: BASIC ORDER BLOCK DETECTION
+# 5. CUSTOM SMC LOGIC: BASIC ORDER BLOCK DETECTION
 def find_order_blocks(df, lookback=1):
-    # Detects the last bearish (down) candle before a strong bullish (up) movement
-    # 'up_move' is true if the current candle closes higher than the previous one
     df['up_move'] = df['close'] > df['close'].shift(1)
-    
-    # 'down_candle' is true if the current candle closes lower than it opened
     df['down_candle'] = df['close'] < df['open']
-    
-    # An OB is a down candle (down_candle=True) followed by a strong up move
-    # We look for a down candle followed by several consecutive up moves (lookback)
     
     order_blocks = []
     
     for i in range(1, len(df) - lookback):
+        # Look for a bearish candle followed by a strong bullish move
         if df['down_candle'].iloc[i] and all(df['up_move'].iloc[i+1 : i+1+lookback]):
-            # The low and high of the bearish candle define the OB zone
             ob_low = df['low'].iloc[i]
             ob_high = df['high'].iloc[i]
             ob_time = df.index[i]
@@ -51,7 +64,7 @@ def find_order_blocks(df, lookback=1):
             
     return pd.DataFrame(order_blocks)
 
-# 5. MAIN APPLICATION
+# 6. MAIN APPLICATION
 if st.button("Analyze Market"):
     with st.spinner(f"Fetching data for {symbol}..."):
         try:
@@ -73,10 +86,9 @@ if st.button("Analyze Market"):
             ob_count = 0
             
             for index, row in ob_df.iterrows():
-                # Draw a rectangle for the Order Block
                 fig.add_shape(type="rect",
                     x0=row['time'], y0=row['low'],
-                    x1=df.index[-1], y1=row['high'], # Extends the box to the end of the chart
+                    x1=df.index[-1], y1=row['high'],
                     line=dict(color="green", width=1),
                     fillcolor="green", opacity=0.2
                 )
@@ -86,14 +98,19 @@ if st.button("Analyze Market"):
             fig.update_layout(xaxis_rangeslider_visible=False, height=600, title=f"{symbol} - Custom Order Block Analysis")
             st.plotly_chart(fig, use_container_width=True)
 
-            # E. AI "Teacher" Insights (Simple Version)
-            st.success(f"📊 Analysis Complete! Found {ob_count} potential Bullish Order Blocks. "
-                       "These green zones are high-interest areas where price may reverse UP.")
+            # E. AI "Teacher" Insights & Alert Trigger
+            st.success(f"📊 Analysis Complete! Found {ob_count} potential Bullish Order Blocks.")
+            
+            # 🔔 DISCORD NOTIFICATION TRIGGER
+            if ob_count > 0:
+                alert_message = f"🟢 ALERT: SMC Bot found {ob_count} BULLISH Order Blocks on **{symbol}-{timeframe}**. Check the dashboard now!"
+                send_discord_alert(alert_message)
+
 
         except Exception as e:
             st.error(f"Error: {e}. Please check the symbol name (e.g., BTC/USDT) and refresh.")
 
-# 6. EDUCATION SECTION
+# 7. EDUCATION SECTION
 with st.expander("📚 Learn: What is an Order Block?"):
     st.write("""
     **Order Block (OB):** This is the last bearish candle (or area) before a major push higher that breaks the previous swing high. 
