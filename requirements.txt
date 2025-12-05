@@ -2,4 +2,4 @@ streamlit
 pandas
 ccxt
 plotly
-smartmoneyconcepts
+smart-money-concept  # CHANGED: Using hyphenated version
