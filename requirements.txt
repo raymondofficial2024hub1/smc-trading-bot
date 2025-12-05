@@ -1,5 +1,2 @@
 streamlit
 pandas
-ccxt
-plotly
-smart-money-concept  # CHANGED: Using hyphenated version
