@@ -10,13 +10,21 @@ import os
 st.set_page_config(layout="wide", page_title="SMC Algo Trader")
 st.title("🤖 Smart Money Concepts (SMC) Trader")
 
+# 2. DISCORD NOTIFICATION FUNCTION (Reads secret key)import streamlit as st
+import requests # Make sure this import is at the top of your file
+# ... other imports ...
+
 # 2. DISCORD NOTIFICATION FUNCTION (Reads secret key)
 def send_discord_alert(message):
     try:
-        # Read the Webhook URL from Streamlit Secrets
-        WEBHOOK_URL = st.secrets["DISCORD_WEBHOOK_URL"]
-        
-        # Discord requires the message content in a JSON payload
+        # Use .get() to safely retrieve the secret, returning None if not found
+        WEBHOOK_URL = st.secrets.get("DISCORD_WEBHOOK_URL")
+
+        if not WEBHOOK_URL:
+            # If the secret is missing, show a clear error and exit the function
+            st.error("Error: The 'DISCORD_WEBHOOK_URL' secret is not configured in Streamlit Cloud.")
+            return
+
         payload = {
             "content": message,
             "username": "SMC Trading Bot"
@@ -24,6 +32,7 @@ def send_discord_alert(message):
         
         # Send the POST request to the Webhook URL
         requests.post(WEBHOOK_URL, json=payload)
+        
     except Exception as e:
         # We print to the Streamlit logs, but don't stop the app
         print(f"Failed to send Discord alert. Check secret key: {e}")
