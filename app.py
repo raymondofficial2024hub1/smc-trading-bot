@@ -1,127 +1,147 @@
 import streamlit as st
-import ccxt
 import pandas as pd
+import yfinance as yf
 import plotly.graph_objects as go
-import numpy as np
-import requests # NEW: for making HTTP requests (Discord)
-import os 
+import requests 
+from smartmoneyconcepts import smc 
+import numpy as np # Needed for smc functions to work correctly
 
-# 1. PAGE SETUP
-st.set_page_config(layout="wide", page_title="SMC Algo Trader")
-st.title("🤖 Smart Money Concepts (SMC) Trader")
+# --- 1. CONFIGURATION ---
+st.set_page_config(
+    page_title="SMC Trading Bot Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-import requests # Make sure this import is at the top of your file
-# ... other imports ...
-
-# 2. DISCORD NOTIFICATION FUNCTION (Reads secret key)
-def send_discord_alert(message):
+# --- 2. DISCORD NOTIFICATION FUNCTION (Robust Secret Handling) ---
+def send_discord_alert(alert_message):
+    """Sends an alert message to a configured Discord Webhook."""
     try:
-        # Use .get() to safely retrieve the secret, returning None if not found
+        # CRITICAL FIX: Use .get() to safely retrieve the secret (prevents KeyError crash)
         WEBHOOK_URL = st.secrets.get("DISCORD_WEBHOOK_URL")
 
         if not WEBHOOK_URL:
             # If the secret is missing, show a clear error and exit the function
-            st.error("Error: The 'DISCORD_WEBHOOK_URL' secret is not configured in Streamlit Cloud.")
+            st.error("🚨 Error: The 'DISCORD_WEBHOOK_URL' secret is not configured in Streamlit Cloud. Cannot send alert.")
             return
 
         payload = {
-            "content": message,
+            "content": alert_message,
             "username": "SMC Trading Bot"
         }
         
-        # Send the POST request to the Webhook URL
-        requests.post(WEBHOOK_URL, json=payload)
+        # Send the POST request
+        response = requests.post(WEBHOOK_URL, json=payload, timeout=10)
+        
+        if response.status_code == 204:
+            st.success("✅ Discord Alert Sent Successfully!")
+        else:
+            st.error(f"❌ Failed to send Discord alert. Status code: {response.status_code}")
+            
+    except requests.exceptions.RequestException as req_err:
+        st.error(f"❌ Connection Error sending Discord alert: {req_err}")
+    except Exception as e:
+        st.error(f"❌ An unexpected error occurred: {e}")
+
+
+# --- 3. SIDEBAR CONTROLS ---
+st.sidebar.header("Market Settings")
+symbol = st.sidebar.text_input("Symbol", value="BTC-USD")
+interval = st.sidebar.selectbox("Interval", options=["1h", "4h", "1d"], index=1)
+period = st.sidebar.selectbox("Data Period", options=["1mo", "3mo", "6mo", "1y"], index=0)
+lookback = st.sidebar.slider("Chart Lookback (Bars)", min_value=10, max_value=200, value=100)
+
+# --- 4. DATA FETCHING AND PROCESSING ---
+@st.cache_data(ttl=600) # Cache data for 10 minutes
+def fetch_data(ticker, period, interval):
+    """Fetches OHLCV data and prepares it for SMC analysis."""
+    st.info(f"Fetching {ticker} data for {period} at {interval} interval...")
+    try:
+        data = yf.download(ticker, period=period, interval=interval)
+        if data.empty:
+            return pd.DataFrame()
+            
+        # CRITICAL SMC FIX: Rename columns to lowercase for smartmoneyconcepts package compatibility
+        # yfinance returns 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume'
+        data.columns = [col.lower() for col in data.columns]
+        data = data.rename(columns={'adj close': 'close'})
+        
+        return data
+
+    except Exception as e:
+        st.error(f"Failed to fetch data: {e}")
+        return pd.DataFrame()
+
+# --- 5. SMC ANALYSIS ---
+def run_smc_analysis(df):
+    """Runs Smart Money Concepts analysis on the dataframe."""
+    if df.empty:
+        return df
+
+    # CRITICAL: Initialize 'highslows' column to avoid errors in smc.ob()
+    # If the SMC library logic fails, it will still show the data without crashing the whole app
+    try:
+        # 1. Detect Swing Highs and Lows
+        df = smc.highs_lows(df, up_thresh=0.05, down_thresh=-0.05) 
+        
+        # 2. Detect Order Blocks (requires 'highslows' column)
+        # Note: If 'highslows' calculation fails, this line will likely fail. We wrap it in a try/except.
+        if 'highslows' in df.columns:
+            df = smc.ob(df, swing_highs_lows=df['highslows'])
+        else:
+            st.warning("Skipping Order Block analysis: Swing Highs/Lows not detected.")
+
+        # 3. Detect Fair Value Gaps
+        df = smc.fvg(df)
         
     except Exception as e:
-        # We print to the Streamlit logs, but don't stop the app
-        print(f"Failed to send Discord alert. Check secret key: {e}")
+        st.warning(f"SMC Analysis failed with an internal error: {e}. Showing raw data.")
+        # If SMC analysis fails, return the raw data frame
+        return df
 
-# 3. SIDEBAR CONTROLS
-st.sidebar.header("Market Settings")
-symbol = st.sidebar.text_input("Symbol", value="BTC/USDT")
-timeframe = st.sidebar.selectbox("Timeframe", ["15m", "1h", "4h", "1d"], index=1)
-
-# 4. FUNCTION TO FETCH DATA (Connects to Binance)
-def get_data(symbol, timeframe):
-    exchange = ccxt.binance()
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=500)
-    df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
-    df['time'] = pd.to_datetime(df['time'], unit='ms')
-    df = df.set_index('time')
     return df
 
-# 5. CUSTOM SMC LOGIC: BASIC ORDER BLOCK DETECTION
-def find_order_blocks(df, lookback=1):
-    df['up_move'] = df['close'] > df['close'].shift(1)
-    df['down_candle'] = df['close'] < df['open']
+# --- MAIN APP LOGIC ---
+st.title(f"📈 SMC Trading Bot Dashboard for {symbol.upper()}")
+
+data_raw = fetch_data(symbol, period, interval)
+
+if not data_raw.empty:
+    df_analyzed = run_smc_analysis(data_raw)
     
-    order_blocks = []
-    
-    for i in range(1, len(df) - lookback):
-        # Look for a bearish candle followed by a strong bullish move
-        if df['down_candle'].iloc[i] and all(df['up_move'].iloc[i+1 : i+1+lookback]):
-            ob_low = df['low'].iloc[i]
-            ob_high = df['high'].iloc[i]
-            ob_time = df.index[i]
-            
-            order_blocks.append({
-                'time': ob_time,
-                'low': ob_low,
-                'high': ob_high
-            })
-            
-    return pd.DataFrame(order_blocks)
+    # Filter the DataFrame to only show the requested lookback period for the chart
+    df_chart = df_analyzed.iloc[-lookback:].copy()
 
-# 6. MAIN APPLICATION
-if st.button("Analyze Market"):
-    with st.spinner(f"Fetching data for {symbol}..."):
-        try:
-            # A. Get Data
-            df = get_data(symbol, timeframe)
-            
-            # B. Apply Custom SMC Logic
-            ob_df = find_order_blocks(df)
+    # 6. PLOT THE CHART (Candlestick)
+    fig = go.Figure(data=[go.Candlestick(
+        x=df_chart.index,
+        open=df_chart['open'],
+        high=df_chart['high'],
+        low=df_chart['low'],
+        close=df_chart['close'],
+        name='Candlestick'
+    )])
 
-            # C. Draw the Chart
-            fig = go.Figure(data=[go.Candlestick(
-                x=df.index,
-                open=df['open'], high=df['high'],
-                low=df['low'], close=df['close'],
-                name=symbol
-            )])
+    # Basic layout updates
+    fig.update_layout(
+        title=f"{symbol.upper()} Price Action",
+        xaxis_title="Date",
+        yaxis_title="Price (USD)",
+        xaxis_rangeslider_visible=False,
+        height=700
+    )
 
-            # D. Draw Order Blocks on Chart
-            ob_count = 0
-            
-            for index, row in ob_df.iterrows():
-                fig.add_shape(type="rect",
-                    x0=row['time'], y0=row['low'],
-                    x1=df.index[-1], y1=row['high'],
-                    line=dict(color="green", width=1),
-                    fillcolor="green", opacity=0.2
-                )
-                ob_count += 1
+    st.plotly_chart(fig, use_container_width=True)
 
-            # Final Chart Polish
-            fig.update_layout(xaxis_rangeslider_visible=False, height=600, title=f"{symbol} - Custom Order Block Analysis")
-            st.plotly_chart(fig, use_container_width=True)
+    # 7. ALERT BUTTON
+    if st.button("🔔 Send Discord Alert (Example)"):
+        # Get the latest close price for the alert message
+        current_price = df_chart['close'].iloc[-1]
+        alert_msg = f"SMC Bot Alert for {symbol.upper()} ({interval}): Current price is {current_price:.2f}. Check for new opportunities."
+        send_discord_alert(alert_msg)
 
-            # E. AI "Teacher" Insights & Alert Trigger
-            st.success(f"📊 Analysis Complete! Found {ob_count} potential Bullish Order Blocks.")
-            
-            # 🔔 DISCORD NOTIFICATION TRIGGER
-            if ob_count > 0:
-                alert_message = f"🟢 ALERT: SMC Bot found {ob_count} BULLISH Order Blocks on **{symbol}-{timeframe}**. Check the dashboard now!"
-                send_discord_alert(alert_message)
-
-
-        except Exception as e:
-            st.error(f"Error: {e}. Please check the symbol name (e.g., BTC/USDT) and refresh.")
-
-# 7. EDUCATION SECTION
-with st.expander("📚 Learn: What is an Order Block?"):
-    st.write("""
-    **Order Block (OB):** This is the last bearish candle (or area) before a major push higher that breaks the previous swing high. 
-    Our bot highlights the low-to-high range of that candle as a zone where institutions likely placed their buy orders. 
-    When price returns to this green zone, we look for a reaction.
-    """)
+    st.subheader("Raw Analyzed Data (Last 5 Bars)")
+    # Show the last 5 bars of the data, including the new SMC columns
+    st.dataframe(df_analyzed.tail().T) 
+else:
+    st.warning("Please check the 'Symbol' input and try again.")
