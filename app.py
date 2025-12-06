@@ -10,7 +10,6 @@ import os
 st.set_page_config(layout="wide", page_title="SMC Algo Trader")
 st.title("🤖 Smart Money Concepts (SMC) Trader")
 
-# 2. DISCORD NOTIFICATION FUNCTION (Reads secret key)import streamlit as st
 import requests # Make sure this import is at the top of your file
 # ... other imports ...
 
