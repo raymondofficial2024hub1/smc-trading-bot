@@ -4,7 +4,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 import requests 
 from smartmoneyconcepts import smc 
-import numpy as np # Needed for smc functions to work correctly
+import numpy as np # Essential for Numba/llvmlite dependency which the SMC library uses
 
 # --- 1. CONFIGURATION ---
 st.set_page_config(
@@ -17,7 +17,7 @@ st.set_page_config(
 def send_discord_alert(alert_message):
     """Sends an alert message to a configured Discord Webhook."""
     try:
-        # CRITICAL FIX: Use .get() to safely retrieve the secret (prevents KeyError crash)
+        # Use .get() to safely retrieve the secret (prevents KeyError crash)
         WEBHOOK_URL = st.secrets.get("DISCORD_WEBHOOK_URL")
 
         if not WEBHOOK_URL:
@@ -36,7 +36,7 @@ def send_discord_alert(alert_message):
         if response.status_code == 204:
             st.success("✅ Discord Alert Sent Successfully!")
         else:
-            st.error(f"❌ Failed to send Discord alert. Status code: {response.status_code}")
+            st.error(f"❌ Failed to send Discord alert. Status code: {response.status_code}. Please check the Webhook URL.")
             
     except requests.exceptions.RequestException as req_err:
         st.error(f"❌ Connection Error sending Discord alert: {req_err}")
@@ -44,14 +44,7 @@ def send_discord_alert(alert_message):
         st.error(f"❌ An unexpected error occurred: {e}")
 
 
-# --- 3. SIDEBAR CONTROLS ---
-st.sidebar.header("Market Settings")
-symbol = st.sidebar.text_input("Symbol", value="BTC-USD")
-interval = st.sidebar.selectbox("Interval", options=["1h", "4h", "1d"], index=1)
-period = st.sidebar.selectbox("Data Period", options=["1mo", "3mo", "6mo", "1y"], index=0)
-lookback = st.sidebar.slider("Chart Lookback (Bars)", min_value=10, max_value=200, value=100)
-
-# --- 4. DATA FETCHING AND PROCESSING ---
+# --- 3. DATA FETCHING AND PROCESSING ---
 @st.cache_data(ttl=600) # Cache data for 10 minutes
 def fetch_data(ticker, period, interval):
     """Fetches OHLCV data and prepares it for SMC analysis."""
@@ -61,31 +54,33 @@ def fetch_data(ticker, period, interval):
         if data.empty:
             return pd.DataFrame()
             
-        # CRITICAL SMC FIX: Rename columns to lowercase for smartmoneyconcepts package compatibility
+        # CRITICAL FIX: Rename columns to lowercase for smartmoneyconcepts package compatibility
         # yfinance returns 'Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume'
         data.columns = [col.lower() for col in data.columns]
         data = data.rename(columns={'adj close': 'close'})
         
+        # Ensure we have the required columns
+        if not all(col in data.columns for col in ['open', 'high', 'low', 'close']):
+            st.error("Missing essential price columns after fetching and renaming.")
+            return pd.DataFrame()
+            
         return data
 
     except Exception as e:
         st.error(f"Failed to fetch data: {e}")
         return pd.DataFrame()
 
-# --- 5. SMC ANALYSIS ---
+# --- 4. SMC ANALYSIS ---
 def run_smc_analysis(df):
     """Runs Smart Money Concepts analysis on the dataframe."""
     if df.empty:
         return df
 
-    # CRITICAL: Initialize 'highslows' column to avoid errors in smc.ob()
-    # If the SMC library logic fails, it will still show the data without crashing the whole app
     try:
         # 1. Detect Swing Highs and Lows
         df = smc.highs_lows(df, up_thresh=0.05, down_thresh=-0.05) 
         
         # 2. Detect Order Blocks (requires 'highslows' column)
-        # Note: If 'highslows' calculation fails, this line will likely fail. We wrap it in a try/except.
         if 'highslows' in df.columns:
             df = smc.ob(df, swing_highs_lows=df['highslows'])
         else:
@@ -102,6 +97,12 @@ def run_smc_analysis(df):
     return df
 
 # --- MAIN APP LOGIC ---
+st.sidebar.header("Market Settings")
+symbol = st.sidebar.text_input("Symbol", value="BTC-USD")
+interval = st.sidebar.selectbox("Interval", options=["1h", "4h", "1d"], index=1)
+period = st.sidebar.selectbox("Data Period", options=["1mo", "3mo", "6mo", "1y"], index=0)
+lookback = st.sidebar.slider("Chart Lookback (Bars)", min_value=10, max_value=200, value=100)
+
 st.title(f"📈 SMC Trading Bot Dashboard for {symbol.upper()}")
 
 data_raw = fetch_data(symbol, period, interval)
@@ -112,7 +113,7 @@ if not data_raw.empty:
     # Filter the DataFrame to only show the requested lookback period for the chart
     df_chart = df_analyzed.iloc[-lookback:].copy()
 
-    # 6. PLOT THE CHART (Candlestick)
+    # 5. PLOT THE CHART (Candlestick)
     fig = go.Figure(data=[go.Candlestick(
         x=df_chart.index,
         open=df_chart['open'],
@@ -133,7 +134,7 @@ if not data_raw.empty:
 
     st.plotly_chart(fig, use_container_width=True)
 
-    # 7. ALERT BUTTON
+    # 6. ALERT BUTTON
     if st.button("🔔 Send Discord Alert (Example)"):
         # Get the latest close price for the alert message
         current_price = df_chart['close'].iloc[-1]
@@ -144,4 +145,4 @@ if not data_raw.empty:
     # Show the last 5 bars of the data, including the new SMC columns
     st.dataframe(df_analyzed.tail().T) 
 else:
-    st.warning("Please check the 'Symbol' input and try again.")
+    st.warning("Could not load market data. Please check the symbol and ensure the market is open or data is available.")
